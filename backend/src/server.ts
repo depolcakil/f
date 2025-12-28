@@ -3,7 +3,6 @@ import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import path from 'path';
 import { createAdapter } from '@socket.io/redis-adapter';
@@ -13,7 +12,6 @@ import authRoutes from './routes/auth.routes';
 import userRoutes from './routes/user.routes';
 import aidRequestRoutes from './routes/aidRequest.routes';
 import notificationRoutes from './routes/notification.routes';
-
 
 const app = express();
 app.use(cors());
@@ -26,7 +24,15 @@ const io = new Server(server, {
   },
 });
 
-const pubClient = createClient({ url: `redis://${process.env.REDIS_HOST}:${process.env.REDIS_PORT}` });
+// --- TEMPORARY FIX FOR LOCAL DEVELOPMENT ---
+// Hardcoding connection strings to bypass dotenv loading issues.
+// For production, these should be loaded from environment variables.
+const REDIS_URL = 'redis://localhost:6379';
+const MONGO_URI = 'mongodb://localhost:27017/ethiosafeguard';
+const PORT = 5000;
+// --- END TEMPORARY FIX ---
+
+const pubClient = createClient({ url: REDIS_URL });
 const subClient = pubClient.duplicate();
 
 Promise.all([pubClient.connect(), subClient.connect()])
@@ -46,10 +52,7 @@ app.use('/api/notifications', notificationRoutes);
 
 handleSocketEvents(io);
 
-const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI;
-
-mongoose.connect(MONGO_URI!)
+mongoose.connect(MONGO_URI)
   .then(() => console.log('MongoDB connected'))
   .catch(err => console.error('MongoDB connection error:', err));
 
