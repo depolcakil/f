@@ -17,8 +17,6 @@ import notificationRoutes from './routes/notification.routes';
 import { RegistrationStatus } from './types/types';
 
 // --- GUARANTEED LOCAL DEVELOPMENT CONFIG ---
-// Bypassing .env loading issues by hardcoding default values.
-// This is for local analysis only. For production, use environment variables.
 const MONGO_URI = 'mongodb://localhost:27017/ethiosafeguard';
 const REDIS_URL = 'redis://localhost:6379';
 const PORT = 5000;
@@ -42,11 +40,7 @@ const subClient = pubClient.duplicate();
 const createAdminAccount = async () => {
   try {
     const existingAdmin = await User.findOne({ role: 'ADMIN' });
-    if (existingAdmin) {
-      console.log('Admin account already exists.');
-      return;
-    }
-
+    if (existingAdmin) return;
     const hashedPassword = await bcrypt.hash('adminpassword', 12);
     const adminUser = new User({
       name: 'Admin',
@@ -55,7 +49,6 @@ const createAdminAccount = async () => {
       role: 'ADMIN',
       status: RegistrationStatus.APPROVED,
     });
-
     await adminUser.save();
     console.log('Admin account created successfully.');
   } catch (error) {
@@ -63,18 +56,18 @@ const createAdminAccount = async () => {
   }
 };
 
+// ** FIX: Set JWT secret *before* registering routes **
+app.use((req, res, next) => {
+  req.app.set('jwt_secret', JWT_SECRET);
+  next();
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/aid-requests', aidRequestRoutes);
 app.use('/api/notifications', notificationRoutes);
 
 handleSocketEvents(io);
-
-// Pass the JWT secret to the request object for the controller to use
-app.use((req, res, next) => {
-  req.app.set('jwt_secret', JWT_SECRET);
-  next();
-});
 
 mongoose.connect(MONGO_URI)
   .then(async () => {
