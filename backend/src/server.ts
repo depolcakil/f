@@ -60,6 +60,15 @@ const createAdminAccount = async () => {
   }
 };
 
+const resetDatabase = async () => {
+    try {
+        await mongoose.connection.db.dropDatabase();
+        console.log('Database dropped successfully.');
+    } catch (error) {
+        console.error('Error dropping database:', error);
+    }
+};
+
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/aid-requests', aidRequestRoutes);
@@ -68,12 +77,17 @@ app.use('/api/notifications', notificationRoutes);
 handleSocketEvents(io);
 
 mongoose.connect(MONGO_URI)
-  .then(() => {
+  .then(async () => {
     console.log('MongoDB connected');
-    // Create admin account after successful DB connection
-    createAdminAccount();
 
-    // Start listening for requests only after DB is connected
+    // --- TEMPORARY DATABASE RESET ---
+    await resetDatabase();
+    // --- END TEMPORARY DATABASE RESET ---
+
+    // Create admin account after successful DB connection and reset
+    await createAdminAccount();
+
+    // Start listening for requests only after DB is connected and setup is complete
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
     // Connect to Redis only after DB is connected
