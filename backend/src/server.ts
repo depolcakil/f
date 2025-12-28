@@ -16,6 +16,14 @@ import aidRequestRoutes from './routes/aidRequest.routes';
 import notificationRoutes from './routes/notification.routes';
 import { RegistrationStatus } from './types/types';
 
+// --- DIAGNOSTIC LOGGING ---
+console.log('--- Environment Variables ---');
+console.log('MONGO_URI:', process.env.MONGO_URI);
+console.log('REDIS_HOST:', process.env.REDIS_HOST);
+console.log('REDIS_PORT:', process.env.REDIS_PORT);
+console.log('---------------------------');
+// --- END DIAGNOSTIC LOGGING ---
+
 const app = express();
 app.use(cors());
 app.use(express.json());
