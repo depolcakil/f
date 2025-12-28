@@ -4,74 +4,55 @@ import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import connectDB from './config/db';
+import mongoose from 'mongoose';
+import path from 'path';
+import { createAdapter } from '@socket.io/redis-adapter';
+import { createClient } from 'redis';
+import { handleSocketEvents } from './sockets/handlers';
 import authRoutes from './routes/auth.routes';
 import userRoutes from './routes/user.routes';
 import aidRequestRoutes from './routes/aidRequest.routes';
 import notificationRoutes from './routes/notification.routes';
-import { attachIO } from './middleware/io.middleware';
-import cluster from 'cluster';
-import os from 'os';
-import { createAdapter } from '@socket.io/redis-adapter';
-import { createClient } from 'redis';
 
-dotenv.config();
+// Configure dotenv to load the .env file from the backend directory
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-const numCPUs = os.cpus().length;
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-if (cluster.isPrimary) {
-  console.log(`Primary ${process.pid} is running`);
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+  },
+});
 
-  // Fork workers.
-  for (let i = 0; i < numCPUs; i++) {
-    cluster.fork();
-  }
+const pubClient = createClient({ url: `redis://${process.env.REDIS_HOST}:${process.env.REDIS_PORT}` });
+const subClient = pubClient.duplicate();
 
-  cluster.on('exit', (worker, code, signal) => {
-    console.log(`worker ${worker.process.pid} died`);
-  });
-} else {
-  connectDB();
-  const app = express();
-  app.use(cors());
-  app.use(express.json());
-
-  const server = http.createServer(app);
-  const io = new Server(server, {
-    cors: {
-      origin: '*',
-    },
+Promise.all([pubClient.connect(), subClient.connect()])
+  .then(() => {
+    io.adapter(createAdapter(pubClient, subClient));
+    console.log('Connected to Redis and Socket.IO adapter is set up');
+  })
+  .catch((err) => {
+    console.error('Failed to connect to Redis:', err);
+    process.exit(1);
   });
 
-  const pubClient = createClient({ url: `redis://${process.env.REDIS_HOST}:${process.env.REDIS_PORT}` });
-  const subClient = pubClient.duplicate();
+app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/aid-requests', aidRequestRoutes);
+app.use('/api/notifications', notificationRoutes);
 
-  Promise.all([pubClient.connect(), subClient.connect()])
-    .then(() => {
-      io.adapter(createAdapter(pubClient, subClient));
-      console.log('Connected to Redis and Socket.IO adapter is set up');
-    })
-    .catch((err) => {
-      console.error('Failed to connect to Redis:', err);
-      process.exit(1);
-    });
+handleSocketEvents(io);
 
-  app.use(attachIO(io));
+const PORT = process.env.PORT || 5000;
+const MONGO_URI = process.env.MONGO_URI;
 
-  app.use('/api/auth', authRoutes);
-  app.use('/api/users', userRoutes);
-  app.use('/api/aid-requests', aidRequestRoutes);
-  app.use('/api/notifications', notificationRoutes);
+mongoose.connect(MONGO_URI!)
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB connection error:', err));
 
-  io.on('connection', (socket) => {
-    console.log('a user connected');
-
-    socket.on('disconnect', () => {
-      console.log('user disconnected');
-    });
-  });
-
-  const PORT = process.env.PORT || 5000;
-
-  server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-}
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
