@@ -60,15 +60,6 @@ const createAdminAccount = async () => {
   }
 };
 
-const resetDatabase = async () => {
-    try {
-        await mongoose.connection.db.dropDatabase();
-        console.log('Database dropped successfully.');
-    } catch (error) {
-        console.error('Error dropping database:', error);
-    }
-};
-
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/aid-requests', aidRequestRoutes);
@@ -78,19 +69,12 @@ handleSocketEvents(io);
 
 mongoose.connect(MONGO_URI)
   .then(async () => {
-    console.log('MongoDB connected');
+    console.log('MongoDB connected successfully.');
 
-    // --- TEMPORARY DATABASE RESET ---
-    await resetDatabase();
-    // --- END TEMPORARY DATABASE RESET ---
-
-    // Create admin account after successful DB connection and reset
     await createAdminAccount();
 
-    // Start listening for requests only after DB is connected and setup is complete
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-    // Connect to Redis only after DB is connected
     Promise.all([pubClient.connect(), subClient.connect()])
       .then(() => {
         io.adapter(createAdapter(pubClient, subClient));
@@ -100,4 +84,8 @@ mongoose.connect(MONGO_URI)
         console.error('Failed to connect to Redis:', err);
       });
   })
-  .catch(err => console.error('MongoDB connection error:', err));
+  .catch(err => {
+    console.error('!!! CRITICAL: MONGODB CONNECTION FAILED !!!');
+    console.error(err);
+    process.exit(1); // Fail-fast: Crash the server if DB connection fails
+  });
