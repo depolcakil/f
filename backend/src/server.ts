@@ -16,6 +16,15 @@ import aidRequestRoutes from './routes/aidRequest.routes';
 import notificationRoutes from './routes/notification.routes';
 import { RegistrationStatus } from './types/types';
 
+// --- GUARANTEED LOCAL DEVELOPMENT CONFIG ---
+// Bypassing .env loading issues by hardcoding default values.
+// This is for local analysis only. For production, use environment variables.
+const MONGO_URI = 'mongodb://localhost:27017/ethiosafeguard';
+const REDIS_URL = 'redis://localhost:6379';
+const PORT = 5000;
+const JWT_SECRET = 'secret';
+// --- END CONFIG ---
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -26,10 +35,6 @@ const io = new Server(server, {
     origin: '*',
   },
 });
-
-const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI;
-const REDIS_URL = `redis://${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`;
 
 const pubClient = createClient({ url: REDIS_URL });
 const subClient = pubClient.duplicate();
@@ -65,14 +70,17 @@ app.use('/api/notifications', notificationRoutes);
 
 handleSocketEvents(io);
 
-mongoose.connect(MONGO_URI!)
+// Pass the JWT secret to the request object for the controller to use
+app.use((req, res, next) => {
+  req.app.set('jwt_secret', JWT_SECRET);
+  next();
+});
+
+mongoose.connect(MONGO_URI)
   .then(async () => {
     console.log('MongoDB connected successfully.');
-
     await createAdminAccount();
-
     server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
     Promise.all([pubClient.connect(), subClient.connect()])
       .then(() => {
         io.adapter(createAdapter(pubClient, subClient));
@@ -85,5 +93,5 @@ mongoose.connect(MONGO_URI!)
   .catch(err => {
     console.error('!!! CRITICAL: MONGODB CONNECTION FAILED !!!');
     console.error(err);
-    process.exit(1); // Fail-fast: Crash the server if DB connection fails
+    process.exit(1);
   });

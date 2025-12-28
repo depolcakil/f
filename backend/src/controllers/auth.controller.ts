@@ -26,7 +26,7 @@ export const register = async (req: Request, res: Response) => {
     });
 
     const savedUser = await user.save();
-    console.log(`Successfully saved user with ID: ${savedUser._id}`); // Proof-of-save log
+    console.log(`Successfully saved user with ID: ${savedUser._id}`);
 
     res.status(201).json({ message: 'User created successfully' });
   } catch (error) {
@@ -37,6 +37,7 @@ export const register = async (req: Request, res: Response) => {
 
 export const login = async (req: Request, res: Response) => {
   const { email, password, role } = req.body;
+  const JWT_SECRET = req.app.get('jwt_secret');
 
   try {
     const user = await User.findOne({ email });
@@ -49,26 +50,25 @@ export const login = async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'Invalid email or password' });
     }
 
-    // Role and Status checks
     if (user.role === 'ADMIN') {
       if (role !== 'ADMIN') {
         return res.status(403).json({ message: 'Access denied. Please use the Admin portal.' });
       }
-    } else { // For DRIVER and SENDER
+    } else {
       if (user.role !== role) {
         return res.status(403).json({ message: `Access denied. Please use the ${user.role} portal.` });
       }
       if (user.status !== RegistrationStatus.APPROVED) {
         if (user.status === RegistrationStatus.PENDING) {
-          return res.status(401).json({ message: 'Account pending approval. Please wait for an administrator to review your application.' });
+          return res.status(401).json({ message: 'Account pending approval.' });
         }
         if (user.status === RegistrationStatus.REJECTED) {
-          return res.status(401).json({ message: 'Your application has been rejected. Please contact support for more information.' });
+          return res.status(401).json({ message: 'Your application has been rejected.' });
         }
       }
     }
 
-    const token = jwt.sign({ email: user.email, id: user._id }, 'secret', { expiresIn: '1h' });
+    const token = jwt.sign({ email: user.email, id: user._id }, JWT_SECRET, { expiresIn: '1h' });
 
     res.status(200).json({ result: user, token });
   } catch (error) {
