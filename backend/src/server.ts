@@ -4,14 +4,17 @@ import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
 import path from 'path';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient } from 'redis';
+import User from './models/user.model';
 import { handleSocketEvents } from './sockets/handlers';
 import authRoutes from './routes/auth.routes';
 import userRoutes from './routes/user.routes';
 import aidRequestRoutes from './routes/aidRequest.routes';
 import notificationRoutes from './routes/notification.routes';
+import { RegistrationStatus } from './types/types';
 
 const app = express();
 app.use(cors());
@@ -25,8 +28,6 @@ const io = new Server(server, {
 });
 
 // --- TEMPORARY FIX FOR LOCAL DEVELOPMENT ---
-// Hardcoding connection strings to bypass dotenv loading issues.
-// For production, these should be loaded from environment variables.
 const REDIS_URL = 'redis://localhost:6379';
 const MONGO_URI = 'mongodb://localhost:27017/ethiosafeguard';
 const PORT = 5000;
@@ -35,15 +36,29 @@ const PORT = 5000;
 const pubClient = createClient({ url: REDIS_URL });
 const subClient = pubClient.duplicate();
 
-Promise.all([pubClient.connect(), subClient.connect()])
-  .then(() => {
-    io.adapter(createAdapter(pubClient, subClient));
-    console.log('Connected to Redis and Socket.IO adapter is set up');
-  })
-  .catch((err) => {
-    console.error('Failed to connect to Redis:', err);
-    process.exit(1);
-  });
+const createAdminAccount = async () => {
+  try {
+    const existingAdmin = await User.findOne({ role: 'ADMIN' });
+    if (existingAdmin) {
+      console.log('Admin account already exists.');
+      return;
+    }
+
+    const hashedPassword = await bcrypt.hash('adminpassword', 12);
+    const adminUser = new User({
+      name: 'Admin',
+      email: 'admin@ethiosafeguard.com',
+      password: hashedPassword,
+      role: 'ADMIN',
+      status: RegistrationStatus.APPROVED,
+    });
+
+    await adminUser.save();
+    console.log('Admin account created successfully.');
+  } catch (error) {
+    console.error('Error creating admin account:', error);
+  }
+};
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
@@ -53,7 +68,22 @@ app.use('/api/notifications', notificationRoutes);
 handleSocketEvents(io);
 
 mongoose.connect(MONGO_URI)
-  .then(() => console.log('MongoDB connected'))
-  .catch(err => console.error('MongoDB connection error:', err));
+  .then(() => {
+    console.log('MongoDB connected');
+    // Create admin account after successful DB connection
+    createAdminAccount();
 
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+    // Start listening for requests only after DB is connected
+    server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+    // Connect to Redis only after DB is connected
+    Promise.all([pubClient.connect(), subClient.connect()])
+      .then(() => {
+        io.adapter(createAdapter(pubClient, subClient));
+        console.log('Connected to Redis and Socket.IO adapter is set up');
+      })
+      .catch((err) => {
+        console.error('Failed to connect to Redis:', err);
+      });
+  })
+  .catch(err => console.error('MongoDB connection error:', err));
