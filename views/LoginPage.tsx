@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { ICONS, APP_NAME } from '../constants';
 import { UserRole, User, RegistrationStatus } from '../types';
-import { store } from '../store';
+import * as api from '../services/api';
 
 interface LoginPageProps {
   role: UserRole;
@@ -16,35 +16,21 @@ export const LoginPage: React.FC<LoginPageProps> = ({ role, onBack, onSuccess })
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
-    setTimeout(() => {
-      const users = store.getUsers();
-      const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-
-      if (!user) {
-        setError('Strategic Identity not found. Verify credentials or register.');
-        setLoading(false);
-        return;
-      }
-
-      if (user.role !== role) {
-        setError(`Access Denied. Identity mismatch for ${role} portal.`);
-        setLoading(false);
-        return;
-      }
-
-      if (user.status !== RegistrationStatus.APPROVED) {
-        setError('Operational Clearance pending. Contact Regional Admin.');
-        setLoading(false);
-        return;
-      }
-
-      onSuccess(user);
-    }, 1000);
+    try {
+      const { data } = await api.login({ email, password, role });
+      localStorage.setItem('profile', JSON.stringify(data));
+      onSuccess(data.result);
+    } catch (err: any) {
+      const message = err.response?.data?.message || "Login failed. Please try again.";
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
