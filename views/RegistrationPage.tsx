@@ -1,8 +1,8 @@
 
 import React, { useState } from 'react';
-import axios from 'axios';
 import { ICONS, APP_NAME } from '../constants';
 import { UserRole } from '../types';
+import * as api from '../services/api';
 
 interface RegistrationPageProps {
   onBack: () => void;
@@ -79,7 +79,7 @@ export const RegistrationPage: React.FC<RegistrationPageProps> = ({ onBack, onCo
     }
 
     try {
-      await axios.post('/api/auth/register', registrationData);
+      await api.register(registrationData);
       onComplete();
     } catch (err: any) {
       const message = err.response?.data?.message || "Registration failed. Please try again.";

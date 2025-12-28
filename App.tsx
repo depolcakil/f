@@ -1,7 +1,6 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { User, UserRole, RegistrationStatus, TruckStatus, AidRequest, Notification, RequestStatus } from './types';
-import { store } from './store';
+import { User, Notification, UserRole } from './types';
 import { LandingPage } from './views/LandingPage';
 import { RegistrationPage } from './views/RegistrationPage';
 import { LoginPage } from './views/LoginPage';
@@ -9,27 +8,43 @@ import { AdminDashboard } from './views/AdminDashboard';
 import { DriverDashboard } from './views/DriverDashboard';
 import { SenderDashboard } from './views/SenderDashboard';
 import { NotificationCenter } from './components/NotificationCenter';
+import * as api from './services/api';
+import { io } from 'socket.io-client';
+
+const socket = io(import.meta.env.VITE_API_URL);
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [view, setView] = useState<'LANDING' | 'REGISTER' | 'LOGIN' | 'DASHBOARD' | 'MAP'>('LANDING');
   const [loginRole, setLoginRole] = useState<UserRole | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [activeTab, setActiveTab] = useState('overview');
 
-  const loadNotifications = useCallback(() => {
+  const loadNotifications = useCallback(async () => {
     if (!currentUser) return;
-    const all = store.getNotifications();
-    setNotifications(all.filter(n => n.userId === currentUser.id));
+    try {
+      const { data } = await api.getNotifications(currentUser.id);
+      setNotifications(data);
+    } catch (error) {
+      console.error('Failed to load notifications:', error);
+    }
   }, [currentUser]);
 
   useEffect(() => {
-    const interval = setInterval(loadNotifications, 5000);
     loadNotifications();
-    return () => clearInterval(interval);
-  }, [loadNotifications]);
+
+    socket.on('newNotification', (newNotification) => {
+      if (newNotification.userId === currentUser?.id) {
+        setNotifications((prev) => [newNotification, ...prev]);
+      }
+    });
+
+    return () => {
+      socket.off('newNotification');
+    };
+  }, [loadNotifications, currentUser]);
 
   const handleLogout = () => {
+    localStorage.removeItem('profile');
     setCurrentUser(null);
     setView('LANDING');
     setLoginRole(null);
@@ -79,10 +94,13 @@ const App: React.FC = () => {
       {currentUser && (
         <NotificationCenter 
           notifications={notifications} 
-          onClear={(id) => {
-            const all = store.getNotifications();
-            store.saveNotifications(all.filter(n => n.id !== id));
-            loadNotifications();
+          onClear={async (id) => {
+            try {
+              await api.markAsRead(id);
+              loadNotifications();
+            } catch (error) {
+              console.error('Failed to mark notification as read:', error);
+            }
           }}
         />
       )}
