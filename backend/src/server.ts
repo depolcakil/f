@@ -14,8 +14,6 @@ import userRoutes from './routes/user.routes';
 import aidRequestRoutes from './routes/aidRequest.routes';
 import notificationRoutes from './routes/notification.routes';
 
-// Configure dotenv to load the .env file from the backend directory
-dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 const app = express();
 app.use(cors());
