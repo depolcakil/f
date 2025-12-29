@@ -5,8 +5,12 @@ import { User, AidRequest, Notification } from '../types';
 const API = axios.create({ baseURL: `${import.meta.env.VITE_API_URL}/api` });
 
 API.interceptors.request.use((req) => {
-  if (localStorage.getItem('profile')) {
-    req.headers.Authorization = `Bearer ${JSON.parse(localStorage.getItem('profile')!).token}`;
+  const profile = localStorage.getItem('profile');
+  if (profile) {
+    const parsedProfile = JSON.parse(profile);
+    if (parsedProfile.token) {
+      req.headers.Authorization = `Bearer ${parsedProfile.token}`;
+    }
   }
   return req;
 });
