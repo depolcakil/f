@@ -8,7 +8,7 @@ import { AdminDashboard } from './views/AdminDashboard';
 import { DriverDashboard } from './views/DriverDashboard';
 import { SenderDashboard } from './views/SenderDashboard';
 import { NotificationCenter } from './components/NotificationCenter';
-import * as api from './services/api';
+import * as api from './src/services/api';
 import { io } from 'socket.io-client';
 
 const socket = io(import.meta.env.VITE_API_URL);
