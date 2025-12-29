@@ -18,6 +18,7 @@ export const login = (formData: any) => API.post('/auth/login', formData);
 // Users
 export const getPendingDrivers = () => API.get('/users/drivers/pending');
 export const approveDriver = (id: string) => API.patch(`/users/drivers/${id}/approve`);
+export const updateDriverStatus = (status: { status: string }) => API.put('/users/driver/status', status);
 
 // Aid Requests
 export const createAidRequest = (formData: any) => API.post('/aid-requests', formData);
