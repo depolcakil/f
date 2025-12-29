@@ -1,15 +1,15 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
-import axios from 'axios';
+import io, { Socket } from 'socket.io-client';
 import { User, TruckStatus, AidRequest, RequestStatus } from '../types';
-import { store } from '../store';
+import * as api from '../src/services/api';
 import { ICONS as UI_ICONS, APP_NAME } from '../constants';
 import { Footer } from '../components/Footer';
 
-// Fix for default icon issue with webpack
+// Leaflet icon fix
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon-2x.png',
@@ -17,75 +17,48 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-shadow.png',
 });
 
+// --- REFACTORED LOCATION TRACKER ---
 interface LocationTrackerProps {
   userId: string;
+  aidRequestId: string;
+  socket: Socket | null;
 }
 
-const LocationTracker: React.FC<LocationTrackerProps> = ({ userId }) => {
+const LocationTracker: React.FC<LocationTrackerProps> = ({ userId, aidRequestId, socket }) => {
   const [position, setPosition] = useState<[number, number] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const updateLocation = useCallback(async (lat: number, lng: number) => {
-    try {
-      // per-call token header (uses stored token if available, falls back to userId)
-      const token = localStorage.getItem('token') || localStorage.getItem('auth_token') || userId;
-      const resp = await axios.put(`/api/users/${userId}/location`, {
+  const updateLocation = useCallback((lat: number, lng: number) => {
+    if (socket) {
+      socket.emit('driver:locationUpdate', {
+        driverId: userId,
+        aidRequestId,
         location: { lat, lng },
-        clientId: userId,
-      }, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
       });
-      // update local store copy so sender UI (which uses local IDs) can pick up location immediately
-      try {
-        const users = store.getUsers();
-        const updated = users.map(u => u.id === userId ? { ...u, truckDetails: { ...u.truckDetails!, location: { lat, lng } } } : u);
-        store.saveUsers(updated);
-        try {
-          (window as any).dispatchEvent(new CustomEvent('localLocationUpdate', { detail: { userId, location: { lat, lng } } }));
-        } catch (e) { /* ignore in non-browser env */ }
-      } catch (e) {
-        console.warn('Failed to update local store with location', e);
-      }
-    } catch (err) {
-      console.error('Failed to update location', err);
     }
-  }, [userId]);
+  }, [socket, userId, aidRequestId]);
 
   useEffect(() => {
-    // try to get an initial fix then start watching
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const { latitude, longitude } = pos.coords;
-        setPosition([latitude, longitude]);
-        updateLocation(latitude, longitude);
-      },
-      () => { /* ignore initial error, will attempt watch */ },
-      { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 }
-    );
-
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const { latitude, longitude } = pos.coords;
         setPosition([latitude, longitude]);
         updateLocation(latitude, longitude);
+        setError(null);
       },
-      (err) => {
-        setError(err.message);
-      },
-      { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 }
+      (err) => setError(err.message),
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
   }, [updateLocation]);
 
   if (error) {
-    return <div className="text-red-500 bg-red-100 p-4 rounded-lg">{error}</div>;
+    return <div className="text-red-500 bg-red-100 p-4 rounded-lg text-center font-bold">GPS Error: {error}</div>;
   }
 
   if (!position) {
-    return <div>Loading map...</div>;
+    return <div className="text-slate-400 bg-slate-800 p-4 rounded-lg text-center font-medium">Acquiring GPS signal...</div>;
   }
 
   return (
@@ -101,69 +74,106 @@ const LocationTracker: React.FC<LocationTrackerProps> = ({ userId }) => {
   );
 };
 
-
+// --- REFACTORED DRIVER DASHBOARD ---
 interface DriverDashboardProps {
   user: User;
   onLogout: () => void;
-  refreshNotifications: () => void;
 }
 
-export const DriverDashboard: React.FC<DriverDashboardProps> = ({ user, onLogout, refreshNotifications }) => {
+export const DriverDashboard: React.FC<DriverDashboardProps> = ({ user, onLogout }) => {
   const [status, setStatus] = useState<TruckStatus>(user.truckDetails?.currentStatus || TruckStatus.IDLE);
   const [activeRequest, setActiveRequest] = useState<AidRequest | null>(null);
   const [pendingRequests, setPendingRequests] = useState<AidRequest[]>([]);
+  const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
-    const fetchRequests = () => {
-      const all = store.getRequests();
-      const pending = all.filter(r => r.driverId === user.id && r.status === RequestStatus.PENDING);
-      const active = all.find(r => r.driverId === user.id && r.status === RequestStatus.ACCEPTED);
-      setPendingRequests(pending);
-      setActiveRequest(active || null);
-      if (active) setStatus(TruckStatus.BUSY);
+    // Connect to the socket server
+    socketRef.current = io('http://localhost:5000', {
+      query: { token: localStorage.getItem('token') },
+    });
+
+    const fetchRequests = async () => {
+      try {
+        const { data: allRequests } = await api.getAidRequests();
+        const pending = allRequests.filter(r => r.driverId === user.id && r.status === RequestStatus.PENDING);
+        const active = allRequests.find(r => r.driverId === user.id && r.status === RequestStatus.ACCEPTED);
+
+        setPendingRequests(pending);
+        setActiveRequest(active || null);
+
+        if (active) {
+          setStatus(TruckStatus.BUSY);
+          // Join the room for this specific aid request to send updates
+          socketRef.current?.emit('joinAidRequestRoom', active.id);
+        }
+      } catch (error) {
+        console.error("Failed to fetch requests:", error);
+      }
     };
 
     fetchRequests();
-    const interval = setInterval(fetchRequests, 5000);
-    return () => clearInterval(interval);
+    const interval = setInterval(fetchRequests, 10000); // Poll for new requests every 10 seconds
+
+    return () => {
+      clearInterval(interval);
+      socketRef.current?.disconnect();
+    };
   }, [user.id]);
 
-  const toggleAvailability = () => {
+  const handleToggleAvailability = async () => {
     const newStatus = status === TruckStatus.IDLE ? TruckStatus.READY : TruckStatus.IDLE;
-    setStatus(newStatus);
-    
-    const users = store.getUsers();
-    const updated = users.map(u => {
-      if (u.id === user.id && u.truckDetails) {
-        return { ...u, truckDetails: { ...u.truckDetails, currentStatus: newStatus } };
-      }
-      return u;
-    });
-    store.saveUsers(updated);
-  };
-
-  const handleAccept = (requestId: string) => {
-    const all = store.getRequests();
-    const updated = all.map(r => r.id === requestId ? { ...r, status: RequestStatus.ACCEPTED } : r);
-    store.saveRequests(updated);
-    
-    const request = updated.find(r => r.id === requestId);
-    if (request) {
-      store.addNotification({
-        userId: request.senderId,
-        title: 'Truck Ready!',
-        message: `${user.name} has accepted your aid request. Tracking active.`,
-        type: 'SUCCESS',
-        requestId: request.id
-      });
+    try {
+      await api.updateDriverStatus({ status: newStatus });
+      setStatus(newStatus);
+    } catch (error) {
+      console.error("Failed to update driver status:", error);
     }
-
-    setStatus(TruckStatus.BUSY);
-    const users = store.getUsers();
-    store.saveUsers(users.map(u => u.id === user.id ? { ...u, truckDetails: { ...u.truckDetails!, currentStatus: TruckStatus.BUSY } } : u));
-    
-    refreshNotifications();
   };
+
+  const handleAcceptRequest = async (requestId: string) => {
+    try {
+      // The backend assigns the driverId based on the authenticated user
+      await api.updateAidRequestStatus(requestId, { status: RequestStatus.ACCEPTED, driverId: user.id });
+      // Refetch requests to update the UI
+      const { data: allRequests } = await api.getAidRequests();
+      const active = allRequests.find(r => r.id === requestId);
+      setActiveRequest(active || null);
+      setPendingRequests(prev => prev.filter(r => r.id !== requestId));
+      setStatus(TruckStatus.BUSY);
+      socketRef.current?.emit('joinAidRequestRoom', requestId);
+    } catch (error) {
+      console.error("Failed to accept request:", error);
+    }
+  };
+
+  const handleReportMilestone = () => {
+    if (!activeRequest || !socketRef.current) return;
+    navigator.geolocation.getCurrentPosition(pos => {
+      const { latitude, longitude } = pos.coords;
+      const milestone = {
+        location: { lat: latitude, lng: longitude },
+        timestamp: new Date().toISOString(),
+        notes: `Checkpoint reached at ${new Date().toLocaleTimeString()}`,
+      };
+      socketRef.current?.emit('driver:milestone', {
+        aidRequestId: activeRequest.id,
+        milestone,
+      });
+      alert('Milestone reported to sender!');
+    });
+  };
+
+  const handleMarkCompleted = async () => {
+    if (!activeRequest) return;
+    try {
+      await api.completeAidRequest(activeRequest.id);
+      setActiveRequest(null);
+      setStatus(TruckStatus.READY); // Or IDLE, depending on desired flow
+    } catch (error) {
+      console.error("Failed to mark request as completed:", error);
+    }
+  };
+
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -197,7 +207,7 @@ export const DriverDashboard: React.FC<DriverDashboardProps> = ({ user, onLogout
                 <p className="text-slate-500 mb-10 max-w-md font-medium">Broadcast your availability to aid organizations. Your GPS will be tracked upon task acceptance.</p>
                 
                 <button 
-                  onClick={toggleAvailability}
+                  onClick={handleToggleAvailability}
                   disabled={status === TruckStatus.BUSY}
                   className={`w-full py-7 rounded-[1.5rem] font-black text-xl transition-all shadow-xl flex items-center justify-center gap-4 ${
                     status === TruckStatus.READY 
@@ -228,11 +238,11 @@ export const DriverDashboard: React.FC<DriverDashboardProps> = ({ user, onLogout
                     Delivering to {activeRequest.destination}
                   </p>
                   <div className="mb-8">
-                    <LocationTracker userId={user.id} />
+                    <LocationTracker userId={user.id} aidRequestId={activeRequest.id} socket={socketRef.current} />
                   </div>
                   <div className="grid sm:grid-cols-2 gap-4">
-                    <button className="py-5 bg-white text-slate-900 rounded-2xl font-black hover:bg-blue-50 transition-all shadow-lg active:scale-95">Report Milestone</button>
-                    <button className="py-5 bg-white/10 text-white rounded-2xl font-black hover:bg-white/20 transition-all border border-white/10 active:scale-95">Mark Completed</button>
+                    <button onClick={handleReportMilestone} className="py-5 bg-white text-slate-900 rounded-2xl font-black hover:bg-blue-50 transition-all shadow-lg active:scale-95">Report Milestone</button>
+                    <button onClick={handleMarkCompleted} className="py-5 bg-white/10 text-white rounded-2xl font-black hover:bg-white/20 transition-all border border-white/10 active:scale-95">Mark Completed</button>
                   </div>
                 </div>
               </div>
@@ -280,7 +290,7 @@ export const DriverDashboard: React.FC<DriverDashboardProps> = ({ user, onLogout
                     <h4 className="font-black text-slate-900 text-lg mb-1">{r.aidType}</h4>
                     <p className="text-sm text-slate-500 mb-8 font-medium">{r.quantity} • To {r.destination}</p>
                     <button 
-                      onClick={() => handleAccept(r.id)}
+                      onClick={() => handleAcceptRequest(r.id)}
                       className="w-full py-4 bg-slate-900 text-white rounded-xl font-black hover:bg-blue-600 transition-all text-xs uppercase tracking-[0.2em] shadow-lg active:scale-95"
                     >
                       Accept Call

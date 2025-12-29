@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { ICONS, APP_NAME } from '../constants';
 import { UserRole, User, RegistrationStatus } from '../types';
-import * as api from '../services/api';
+import * as api from '../src/services/api';
 
 interface LoginPageProps {
   role: UserRole;
