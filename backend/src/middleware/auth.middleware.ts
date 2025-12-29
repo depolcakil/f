@@ -10,7 +10,11 @@ export const protect = async (req: Request, res: Response, next: NextFunction) =
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
     try {
       token = req.headers.authorization.split(' ')[1];
-      const decoded: any = jwt.verify(token, process.env.JWT_SECRET!);
+      const secret = req.app.get('jwt_secret');
+      if (!secret) {
+        return res.status(500).json({ message: 'Server error: JWT secret not set' });
+      }
+      const decoded: any = jwt.verify(token, secret);
       if (!decoded || !decoded.id) {
         return res.status(401).json({ message: 'Not authorized, token invalid' });
       }
