@@ -72,3 +72,26 @@ export const updateAidRequestStatus = async (req: Request, res: Response) => {
     res.status(404).json({ message: 'Request not found' });
   }
 };
+
+export const completeAidRequest = async (req: Request, res: Response) => {
+  const request = await AidRequest.findById(req.params.id);
+
+  if (request) {
+    request.status = 'Completed';
+    const updatedRequest = await request.save();
+
+    const notification = await Notification.create({
+      userId: updatedRequest.senderId,
+      title: 'Request Completed',
+      message: 'Your aid request has been marked as completed.',
+      type: 'SUCCESS',
+      requestId: updatedRequest._id,
+    });
+
+    req.io.emit('notification', notification);
+
+    res.json(updatedRequest);
+  } else {
+    res.status(404).json({ message: 'Request not found' });
+  }
+};

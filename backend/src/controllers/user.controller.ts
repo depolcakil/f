@@ -40,6 +40,14 @@ export const updateUserLocation = async (req: Request, res: Response) => {
   }
 };
 
+export const getAvailableDrivers = async (req: Request, res: Response) => {
+  const drivers = await User.find({
+    role: 'DRIVER',
+    'truckDetails.currentStatus': 'READY',
+  });
+  res.json(drivers);
+};
+
 export const getUsers = async (req: Request, res: Response) => {
   const users = await User.find({});
   res.json(users);
@@ -67,5 +75,18 @@ export const approveUser = async (req: Request, res: Response) => {
     res.json(updatedUser);
   } else {
     res.status(404).json({ message: 'User not found' });
+  }
+};
+
+export const updateDriverStatus = async (req: Request, res: Response) => {
+  const user = await User.findById(req.user._id);
+
+  if (user && user.role === 'DRIVER') {
+    user.truckDetails = user.truckDetails || {};
+    user.truckDetails.currentStatus = req.body.status;
+    const updatedUser = await user.save();
+    res.json(updatedUser);
+  } else {
+    res.status(404).json({ message: 'Driver not found' });
   }
 };

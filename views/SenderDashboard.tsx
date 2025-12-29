@@ -1,15 +1,15 @@
 
-import React, { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import React, { useState, useEffect, useRef } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, Tooltip } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
-import io from 'socket.io-client';
+import io, { Socket } from 'socket.io-client';
 import { User, TruckStatus, AidRequest, RequestStatus } from '../types';
-import { store } from '../store';
+import * as api from '../src/services/api';
 import { ICONS as UI_ICONS, APP_NAME } from '../constants';
 import { Footer } from '../components/Footer';
 
-// Fix for default icon issue
+// Leaflet icon fix
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-icon-2x.png',
@@ -17,55 +17,79 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://unpkg.com/leaflet@1.7.1/dist/images/marker-shadow.png',
 });
 
-const LiveLocationMap: React.FC<{ driverId: string | null; driver?: User | null }> = ({ driverId, driver }) => {
+// --- REFACTORED LIVE LOCATION MAP ---
+interface LiveLocationMapProps {
+  driver: User | null;
+  aidRequestId: string;
+  socket: Socket | null;
+}
+
+const LiveLocationMap: React.FC<LiveLocationMapProps> = ({ driver, aidRequestId, socket }) => {
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(driver?.truckDetails?.location || null);
+  const [lastMilestone, setLastMilestone] = useState<any>(null);
 
   useEffect(() => {
-    const socket = io('http://localhost:5000');
+    // Join the room for this request as soon as the component mounts
+    if (socket && aidRequestId) {
+      socket.emit('joinAidRequestRoom', aidRequestId);
+    }
 
-    socket.on('locationUpdate', (data: { userId: string; clientId?: string; licensePlate?: string; location: { lat: number; lng: number } }) => {
-      if (!driverId) return;
-      // compare as strings to handle different id formats (local vs backend)
-      if (String(data.userId) === String(driverId) || String(data.clientId || '') === String(driverId)) {
+    const handleLocationUpdate = (data: { driverId: string; location: { lat: number; lng: number } }) => {
+      if (data.driverId === driver?.id) {
         setLocation(data.location);
-        return;
-      }
-      // fallback: match by license plate if the frontend has that info
-      if (driver?.truckDetails?.licensePlate && data.licensePlate && String(data.licensePlate) === String(driver.truckDetails.licensePlate)) {
-        setLocation(data.location);
-      }
-    });
-
-    // listen for local location updates (from same-browser local store) to support local-id workflows
-    const localHandler = (e: any) => {
-      const d = e?.detail;
-      if (!d || !driverId) return;
-      if (String(d.userId) === String(driverId)) {
-        setLocation(d.location);
       }
     };
-    window.addEventListener('localLocationUpdate', localHandler);
+
+    const handleMilestoneReport = (data: { milestone: any }) => {
+      setLastMilestone(data.milestone);
+      if (data.milestone.location) {
+        setLocation(data.milestone.location); // Also update map to milestone location
+      }
+    };
+
+    socket?.on('locationUpdated', handleLocationUpdate);
+    socket?.on('milestoneReported', handleMilestoneReport);
+
+    // Poll for initial location every 30 seconds until first signal
+    const pollInterval = setInterval(() => {
+      if (!location && driver?.id) {
+        api.getUser(driver.id).then(res => {
+          if (res.data?.truckDetails?.location) {
+            setLocation(res.data.truckDetails.location);
+          }
+        });
+      }
+    }, 30000);
 
     return () => {
-      socket.disconnect();
-      window.removeEventListener('localLocationUpdate', localHandler as EventListener);
+      clearInterval(pollInterval);
+      socket?.off('locationUpdated', handleLocationUpdate);
+      socket?.off('milestoneReported', handleMilestoneReport);
     };
-  }, [driverId]);
+  }, [driver, aidRequestId, socket, location]);
 
   if (!location) {
-    return <div className="bg-black h-[500px] rounded-[3rem] flex items-center justify-center text-white">Awaiting GPS signal...</div>;
+    return <div className="bg-black h-[500px] rounded-[3rem] flex items-center justify-center text-white font-black text-xl tracking-widest uppercase">Awaiting GPS Signal...</div>;
   }
 
   return (
     <MapContainer center={[location.lat, location.lng]} zoom={13} style={{ height: '500px', width: '100%', borderRadius: '3rem' }}>
       <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
       <Marker position={[location.lat, location.lng]}>
-        <Popup>{driver?.name || 'Driver'}'s Location</Popup>
+        <Popup>{driver?.name || 'Driver'}'s Current Location</Popup>
+        {lastMilestone && (
+          <Tooltip permanent>
+            <div className="font-bold">Milestone:</div>
+            <div>{lastMilestone.notes}</div>
+            <div className="text-xs text-gray-500">@{new Date(lastMilestone.timestamp).toLocaleTimeString()}</div>
+          </Tooltip>
+        )}
       </Marker>
     </MapContainer>
   );
 };
 
+// --- REFACTORED SENDER DASHBOARD ---
 interface SenderDashboardProps {
   user: User;
   onLogout: () => void;
@@ -73,62 +97,68 @@ interface SenderDashboardProps {
 
 export const SenderDashboard: React.FC<SenderDashboardProps> = ({ user, onLogout }) => {
   const [availableTrucks, setAvailableTrucks] = useState<User[]>([]);
-  const [selectedTruck, setSelectedTruck] = useState<User | null>(null);
   const [activeRequests, setActiveRequests] = useState<AidRequest[]>([]);
+  const [selectedTruck, setSelectedTruck] = useState<User | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [trackingRequest, setTrackingRequest] = useState<AidRequest | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   
   const [form, setForm] = useState({
     aidType: '',
     quantity: '',
     destination: '',
-    urgency: 'Medium' as const
+    urgency: 'Medium' as const,
   });
 
-  const fetchData = () => {
-    const allUsers = store.getUsers();
-    setAvailableTrucks(allUsers.filter(u => u.role === 'DRIVER' && u.truckDetails?.currentStatus === TruckStatus.READY));
-    const allRequests = store.getRequests();
-    setActiveRequests(allRequests.filter(r => r.senderId === user.id));
+  const fetchData = async () => {
+    try {
+      const [{ data: trucks }, { data: requests }] = await Promise.all([
+        api.getAvailableDrivers(),
+        api.getAidRequests(),
+      ]);
+      setAvailableTrucks(trucks);
+      // Filter requests relevant to this sender
+      setActiveRequests(requests.filter(r => r.senderId === user.id));
+    } catch (error) {
+      console.error("Failed to fetch initial data:", error);
+    }
   };
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
+    socketRef.current = io('http://localhost:5000', {
+      query: { token: localStorage.getItem('token') },
+    });
+
+    fetchData(); // Fetch initial data
+
+    const interval = setInterval(fetchData, 15000); // Poll for updates every 15 seconds
+
+    return () => {
+      clearInterval(interval);
+      socketRef.current?.disconnect();
+    };
   }, [user.id]);
 
-  const handleSubmitAid = (e: React.FormEvent) => {
+  const handleSubmitAid = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTruck) return;
 
-    const newRequest: AidRequest = {
-      id: Math.random().toString(36).substr(2, 9),
-      senderId: user.id,
-      driverId: selectedTruck.id,
-      aidType: form.aidType,
-      quantity: form.quantity,
-      destination: form.destination,
-      urgency: form.urgency,
-      status: RequestStatus.PENDING,
-      createdAt: Date.now()
-    };
-
-    const currentRequests = store.getRequests();
-    store.saveRequests([newRequest, ...currentRequests]);
-    
-    store.addNotification({
-      userId: selectedTruck.id,
-      title: 'High Priority Deployment!',
-      message: `${user.organizationDetails?.name} assigned a mission: ${form.aidType}.`,
-      type: 'INFO'
-    });
-
-    setShowForm(false);
-    setSelectedTruck(null);
-    setForm({ aidType: '', quantity: '', destination: '', urgency: 'Medium' });
-    fetchData();
+    try {
+      await api.createAidRequest({
+        ...form,
+        driverId: selectedTruck.id,
+      });
+      setShowForm(false);
+      setSelectedTruck(null);
+      setForm({ aidType: '', quantity: '', destination: '', urgency: 'Medium' });
+      fetchData(); // Refresh data after submission
+    } catch (error) {
+      console.error("Failed to create aid request:", error);
+    }
   };
+
+  const trackingDriver = trackingRequest ? availableTrucks.find(t => t.id === trackingRequest.driverId) || null : null;
+
 
   return (
     <div className="min-h-screen flex flex-col mesh-gradient">
@@ -241,7 +271,7 @@ export const SenderDashboard: React.FC<SenderDashboardProps> = ({ user, onLogout
               </div>
 
               <div className="relative mb-12 shadow-2xl group border border-white/5 rounded-[3rem]">
-                <LiveLocationMap driverId={trackingRequest?.driverId || null} driver={availableTrucks.find(t => t.id === trackingRequest?.driverId) || null} />
+                <LiveLocationMap driver={trackingDriver} aidRequestId={trackingRequest.id} socket={socketRef.current} />
               </div>
 
               <div className="grid grid-cols-3 gap-8">
@@ -290,12 +320,16 @@ export const SenderDashboard: React.FC<SenderDashboardProps> = ({ user, onLogout
                       style={{ animationDelay: `${idx * 150}ms` }}
                     >
                       <div className="flex gap-8 items-center">
-                        <div className={`w-20 h-20 rounded-[2rem] flex items-center justify-center shadow-2xl transition-all group-hover:scale-110 ${req.status === RequestStatus.ACCEPTED ? 'bg-indigo-600 text-white shadow-indigo-200' : 'bg-slate-200 text-slate-500 shadow-slate-100'}`}>
+                        <div className={`w-20 h-20 rounded-[2rem] flex items-center justify-center shadow-2xl transition-all group-hover:scale-110 ${req.status === RequestStatus.ACCEPTED || req.status === "COMPLETED" ? 'bg-indigo-600 text-white shadow-indigo-200' : 'bg-slate-200 text-slate-500 shadow-slate-100'}`}>
                            <UI_ICONS.Truck className="w-10 h-10" />
                         </div>
                         <div>
                           <div className="flex items-center gap-4 mb-3">
-                            <span className={`px-4 py-1.5 rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] border ${req.status === RequestStatus.ACCEPTED ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-slate-100 text-slate-400 border-slate-200'}`}>
+                            <span className={`px-4 py-1.5 rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] border ${
+                                req.status === RequestStatus.ACCEPTED ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+                                : req.status === "COMPLETED" ? 'bg-blue-50 text-blue-600 border-blue-100'
+                                : 'bg-slate-100 text-slate-400 border-slate-200'
+                              }`}>
                               {req.status}
                             </span>
                             <span className="text-xs font-black font-mono text-slate-300 tracking-tighter uppercase">ID: {req.id}</span>
@@ -317,8 +351,8 @@ export const SenderDashboard: React.FC<SenderDashboardProps> = ({ user, onLogout
                             Live Telemetry
                           </button>
                         ) : (
-                          <div className="flex items-center justify-center gap-4 px-12 py-6 bg-slate-100 text-slate-400 rounded-[2rem] font-black text-sm uppercase tracking-[0.3em] border border-slate-200 cursor-not-allowed">
-                            Dispatch Pending
+                          <div className={`flex items-center justify-center gap-4 px-12 py-6 rounded-[2rem] font-black text-sm uppercase tracking-[0.3em] border ${req.status === "COMPLETED" ? "bg-white text-slate-900 border-slate-200" : "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"}`}>
+                            {req.status === "COMPLETED" ? 'Mission Complete' : 'Dispatch Pending'}
                           </div>
                         )}
                       </div>

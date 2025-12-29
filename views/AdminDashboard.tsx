@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { User, RegistrationStatus } from '../types';
-import * as api from '../services/api'; // Correctly import the API service
+import * as api from '../src/services/api'; // Correctly import the API service
 import { ICONS as UI_ICONS, APP_NAME } from '../constants';
 import { Footer } from '../components/Footer';
 
